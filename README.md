@@ -84,3 +84,20 @@ splunk: username lookup on username from path/cmdline data like in c:\users\bob
 -q 'md5:E30AA473082E6251F9B9A916FF45AB44'
 
 ![alt text](DIGGER_D.jpg)
+
+
+
+-q 'ipaddr:'
+
+![alt text](DIGGER_IP.jpg)
+
+
+Auto decode powershell
+
+![alt text](DIGGER_PSDECODE.jpg)
+
+
+Auto upload Wildfire
+
+![alt text](DIGGER_UPLOAD.jpg)
+
