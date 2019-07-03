@@ -29,11 +29,14 @@ DIGGER  -w \( backups watchlist and CBR TI feeds 1 to 50 \)
 
 # Features
 
-queries with domain and ipaddr digging +-10 from the netconns near the requested IP/Domain
+queries with domain and ipaddr digging +-10 from the netconns near the requested IP/Domain ion CBR
 
 automated decoding of powershell when using -q command
 
-Config:
+automated upload of unknown MD5's to Wildfire from CBR 
+
+
+# Config
 
 edit export varfilter=  to add and aditonal fields you would like to return in the search from CBR
 
