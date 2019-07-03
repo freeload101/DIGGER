@@ -1,0 +1,399 @@
+#!/usr/bin/bash
+
+# v 1.2alpha
+
+# EXAMPLES:
+# -e 000092c7-0000-12dc-01d5-0c1d7842d547
+# -q 'md5:E30AA473082E6251F9B9A916FF45AB44'
+# 17 days 999 rows ( think max is 200 )
+# -q 'md5:E30AA473082E6251F9B9A916FF45AB44' 17 999
+# -q 'ipaddr:104.156.53.91'
+# -q 'ipaddr:104.28.24.98'
+# -q 'domain:rtgpix.com' 
+
+# todo:
+# Deepdig Summery : not begin
+# Deepdig Summery : md5 seen <100 computers
+# Deepdig Summery : powershell 
+# Deepdig Summery : remove dupicate-ish lines   dupes some how.. Md5 ? username ? or remove MD5 check ? 
+
+# ipaddr:/domain: if no results found search Splunk etc for IP
+# ipaddr:/domain: perform checks on domains censys.io
+# ipaddr:/domain: domain rep using VT
+
+# replace cmdline and path random strings and numbers with _RANDOM_ sed -r 's/[A-Z|a-z|0-9]{120}/_RANDOM_/g'|sed -r 's/[0-9]{4,999}/_RANDOM_/g' for deduping etc
+# WildFire Link API ?
+# digg more on Seen < 100 or > 5K whitelist  / not signed etc 
+# add live search : part of live TH script
+# search BHO's chrome 
+# search BHO's IE
+ 
+# splunk: username lookup on workstatoin > username 
+# splunk: username lookup on username from path/cmdline data like in c:\users\bob 
+
+
+export varfilter='(\"cmdline\"|\"path\")'
+#export varfilter='(\"elapsed\"|\"alliance_link_attackframework\"|\"wid\"|\"segment_id\"|\"total_results\"|\"regmod_count\"|\"crossproc_count\"|\"cmdline\"|\"filemod_count\"|\"netconn_count\"|\"hostname\"|\"username\"|\"process_name\"|\"parent_name\"|\"path\")'
+
+#REMOVE and backup insted  DEBUGGING set -x 
+rm -Rf PENDING COMPLETE tmp  EVENTIDVAR_OUT.txt EVENTIDVAR_MD5S *.zip *_OUT   2> /dev/null
+
+# Put your super secret sensitive info here
+export CBRapikey='XXXXXXXXXXXXXXXXXXXXX'
+export WildFireapikey='XXXXXXXXXXXXXXXX'
+export CBRdomain='XXXXXXXXXXXXXXXXXXXXX.com:8443'
+
+############################################ DANGER DONT EDIT BELOW THIS LINE UNLESS YOU WANT YOUR RETINAS TO BURN LOOKING AT MY CODE #######
+
+function _usage(){
+echo $0 -q " \'QUERY\''  DAYS_AGO ROWS (returns cmd the defualts to  1 row and 3 days be sure to use single quotes in your QUERY statment and max rows"
+echo $0 -d " \'QUERY\''  DAYS_AGO ROWS (Same as -q but runs deep search on every search result"
+echo $0 -e EVENTID \( Does a deep search for an even ID up and down the process tree \)
+echo $0 -w \( backups watchlist and CBR TI feeds 1 to 50 \)
+
+
+echo Features:
+echo '* queries with domain and ipaddr digging +-10 from the netconns near the requested IP/Domain'
+echo '* automated decoding of powershell when using -q command'
+
+echo Config:
+echo ' edit export varfilter=  to add and aditonal fields you would like to return in the search from CBR '
+}
+
+
+
+###################### FUNCTION TO DOWNLOAD / BACKUP WATCHLIST AND THREAT REPORTS AND REMOVE EMPTY ONES
+CBR_DUMP_FEEDS_TI(){
+
+# feeds bit ...
+echo Debug:	as of 20190424 CB R only had 21 feeds so I put 50 just to be sure
+
+echo Debug: killing curl
+# using taskkill and killall 
+taskkill /F /IM curl.exe 2> /dev/null
+killall -9 curl 2> /dev/null
+
+echo Debug:	Moving existing folder
+export varbackupfolder=$RANDOM
+mkdir "`date +%Y%m%d`${varbackupfolder}"
+mv CBRDUMPFEED*.txt "`date +%Y%m%d`${varbackupfolder}"
+
+for i in `seq 1 50`
+do 
+echo Debug:	Downloading feed ID $i 
+curl -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/threat_report?cb.q.feed_id=${i}&rows=200" > CBRDUMPFEEDS${i}.txt &
+
+done
+
+while [[ `ps -a | grep curl |wc -l` != '0' ]]
+	do
+	echo Debug:	Waiting for downloads to complete
+	sleep .1
+done
+		
+echo Debug:	Removing feeds with no results 
+rm `find . -maxdepth 1  -iname "CBRDUMPFEEDS*\.txt" -exec grep -H "\"total_results\"\: 0" '{}' \; | awk '{print $1}' | sed -r 's/(.\/)(CBRDUMPFEEDS.*.txt)(:)/\2/g'`
+
+echo Debug:	exporting to csvish output
+# IFS=$'\n';cat CBRDUMPFEEDS*.txt | tr -d '\n'|  awk '{gsub("\"ipv4_count","\n\"ipv4_count"); print}' |grep '^\"ipv4_count' > CBRDUMPFEEDS_"`date +%Y%m%d`${varbackupfolder}".csv
+IFS=$'\n';cat CBRDUMPFEEDS*.txt |tr -d '\n' | tr -d '\r' |  awk '{gsub("\"ipv4_count","\n\"ipv4_count"); print}' |grep '^\"ipv4_count' > CBRDUMPFEEDS_"`date +%Y%m%d`${varbackupfolder}".csv
+
+
+# backup watchlist to csv
+curl -ikLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/watchlist" | tr -d '\n' |  awk '{gsub("\"last_hit_count","\n\"last_hit_count"); print}' |grep '^\"last_hit_count' > WATCHLIST.csv
+
+
+}
+
+
+
+###################### FUNCTION TO DOWNLOAD FILE BASED OFF OF MD5 AND  EXTRACT / UPLOAD TO WILDFIRE
+get_cbr_file(){
+curl  -skJLO -L https://${CBRdomain}/api/v1/binary/$1 -H "X-Auth-Token: $CBRapikey" 
+mkdir ./$1_OUT/
+7z -bso0 -bsp0 -y -aoa x $1 -o./$1_OUT/
+curl -F 'apikey=$WildFireapikey'  -F "file=@./$1_OUT/filedata" 'https://wildfire.paloaltonetworks.com/publicapi/submit/file'  
+}
+
+###################### FUNCTION TO CHECK MD5'S AND UPLOAD TO WILDFIRE IF UNKNOWN
+check_md5(){
+echo Debug:	Checking $1
+
+export MD5_CHECK=`curl -kLs -F 'apikey=$WildFireapikey' -F "hash=$1" 'https://wildfire.paloaltonetworks.com/publicapi/get/verdict'  | grep "<verdict>" | sed -r 's/(.*)(<verdict>)(.*)(<\/verdict>)/\3/g'`
+
+if [[ "$MD5_CHECK" == "-102" ]]
+	then
+		echo Info:		Uploading $1
+		get_cbr_file $1
+elif [[ "$MD5_CHECK" == "-10[0|1]" ]]
+	then
+		echo Error:		code $1 MD5 $MD5_CHECK : -100: pending, the sample exists, but there is currently no verdict -101: error
+elif [[ "$MD5_CHECK" == "[1|2|4]" ]]
+	then
+	echo Critical:		$1 MD5 $MD5_CHECK : '(1: malware 2: grayware  4: phishing)'
+else
+export WILDFIRESCORE=$(bc <<< `curl -s -F "apikey=$WildFireapikey"  -F "hash=$1"  -F 'format=xml' 'https://wildfire.paloaltonetworks.com/publicapi/get/report'| grep score | sed -r 's/.*score=\"(.*)\".*/\1+/g' | tr -d '\n' |sed 's/+$//g'`)
+
+	echo Info: $1,$MD5_CHECK,benign Seen by ,`curl -kLs "https://${CBRdomain}/api/v1/process/host/count?name=md5&md5=$1" -H "X-Auth-Token: $CBRapikey" | sed -r 's/(^.*hostCount\": )(.*)(, \"globalCount.*)/\2/g'`, Hosts with a score of,$WILDFIRESCORE
+fi
+}
+
+
+###################### FUNCTION TO CRAWL DOWN THE TREE AND RETURN ALL THE MD5 info
+get_cbr_child(){
+
+echo $EVENTIDVAR > PENDING
+touch COMPLETE
+
+while [[ `grep -v -x -f COMPLETE PENDING` != '' ]]
+do
+for i in `grep -v -x -f COMPLETE PENDING`
+do
+echo Debug:	Getting children for $i
+curl -ikLs "https://${CBRdomain}/api/v1/process/$i/0" -H "X-Auth-Token: $CBRapikey" > tmp
+cat tmp >> EVENTIDVAR_OUT.txt
+cat tmp |  sed -n '/\"children\"/,/\"parent\"/p' | grep -E  '"id"'  | sed -e 's/.*\"id\": \"//g' -e 's/\",//g' >> PENDING
+grep '\"process_md5\"' tmp  | sed -r 's/(.*\"process_md5\": \")(.*)(\",)/\2/g' >> EVENTIDVAR_MD5S 
+ 
+echo $i >> COMPLETE
+
+done
+done
+echo Debug:	Child Complete `cat COMPLETE|wc -l` total IDs , `cat EVENTIDVAR_MD5S|sort -u|wc -l` total MD5s
+
+}
+
+
+
+
+
+ 
+ 
+###################### FUNCTION TO CRAWL UP THE TREE AND RETURN ALL THE MD5 info
+get_cbr_top_get(){
+export EVENTIDVAR_LAST=$EVENTIDVAR
+export VARIDOUT=`curl -ikLs "https://${CBRdomain}/api/v2/process/$EVENTIDVAR/0" -H "X-Auth-Token: $CBRapikey"`
+export EVENTIDVAR=`echo $VARIDOUT |sed -e 's/.*parent_id\": \"//g' -e 's/\".*//g'`
+if [ "$EVENTIDVAR" == "$EVENTIDVAR_LAST" ] 
+then
+echo Error: Failed to fetch new event ID or parent is itself exiting
+exit
+else
+echo $VARIDOUT >> EVENTIDVAR_OUT.txt
+echo $VARIDOUT | grep '\"process_md5\"' | sed -e 's/.*\"process_md5\": \"//g' -e 's/\",.*//g' >> EVENTIDVAR_MD5S
+fi
+}
+ 
+get_cbr_top(){
+while [[ "$EVENTIDVAR" != *ffff\-ffff\-0000\-000000000000  ]] && [[ "$EVENTIDVAR" != *HTTP* ]] && [[ "$EVENTIDVAR" != 00003e2b\-0000\-0004\-01d4\-4f619c66ecc0 ]]
+	do 
+			echo Debug:	Getting Parents for $EVENTIDVAR
+			get_cbr_top_get
+			
+			get_cbr_top_get=$EVENTIDVAR
+			echo $EVENTIDVAR >> COMPLETE
+	done
+echo Debug:	Parent Complete `cat COMPLETE|wc -l` total IDs, `cat EVENTIDVAR_MD5S|sort -u|wc -l` total MD5s
+}
+
+
+
+
+check_score(){
+# not used just part of md5 check now ...
+#echo `curl -s -F "apikey=$WildFireapikey"  -F "hash=$1"  -F 'format=xml' 'https://wildfire.paloaltonetworks.com/publicapi/get/report'| grep score | sed -r 's/.*score=\"(.*)\".*/\1+/g' | tr -d '\n' |sed 's/+$//g'` |bc 
+export WILDFIRESCORE=$(bc <<< `curl -s -F "apikey=$WildFireapikey"  -F "hash=$1"  -F 'format=xml' 'https://wildfire.paloaltonetworks.com/publicapi/get/report'| grep score | sed -r 's/.*score=\"(.*)\".*/\1+/g' | tr -d '\n' |sed 's/+$//g'`)
+echo Info:	Wildfire Score is $WILDFIRESCORE
+
+
+}
+
+
+
+###################### FUNCTION TO CRAWL UP THE TREE AND RETURN ALL THE MD5 info
+check_md5_local(){
+# check counts for file localy
+curl -kLs "https://${CBRdomain}/api/v1/process/host/count?name=md5&md5=$1" -H "X-Auth-Token: $CBRapikey" | sed -r 's/(^.*hostCount\": )(.*)(, \"globalCount.*)/1/g'
+}
+
+###################### FUNCTION TO digg into a event id and go up and down the event tree ,check cbr info for md5's check md5 wildfire , report wildfire score,return info on  ${varfilter} from CBR
+function EVENTID(){
+echo Debug:	EVENTID  $EVENTIDVAR
+get_cbr_child
+get_cbr_top
+ 
+
+for i in `cat EVENTIDVAR_MD5S|sort -u`
+do
+check_md5 $i
+done
+
+
+awk '{gsub("\",","\",\n"); print}' EVENTIDVAR_OUT.txt |grep  -E "${varfilter}"  | sed -r  's/(.*\")(path|cmdline)/\"\2/g' | sort| uniq -c | sort -rn  | sed 's/^/Info:	/g'
+
+
+}
+ 
+###################### FUNCTION TO CRAWL DOWN THE TREE AND RETURN ALL THE MD5 info
+function QUERYRUN(){
+echo Debug:	Running query ... "$CBQUERY"
+echo -e $0 \'QUERY\' DAYS_AGO ROWS defualts to  3 days and 1 row be sure to use single quotes in your QUERY statment
+
+if [[ "$CBRDAYS" == "" ]]
+then
+export QUERYSTRING=$CBRQUERY 
+export CBRROWS=1
+export CBRDAYS=7
+fi
+
+curl -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/process?rows=${CBRROWS}&cb.min_last_update=`date +%Y-%m-%d -d "${CBRDAYS} day ago"`T00%3A00%3A00Z"  --get --data-urlencode "q=${CBRQUERY}" > tmp
+
+QUERY_CHECK_DOMAIN_IP
+
+grep  -E "${varfilter}"  tmp |  sort| uniq -c | sort -rn 
+ 
+
+grep -Eo "([A-Z|a-z|0-9]{100})" tmp| base64 -d | sed 's/\x00//g' | sed 's/^/Warning: Possible PowerShell Decoded : \! /g'
+
+}
+
+###################### FUNCTION TO CRAWL DOWN THE TREE AND RETURN ALL THE MD5 info
+function QUERYRUN_DEEP(){
+echo Debug: Running Deep Query on "$CBRQUERY"
+if [[ "$CBRDAYS" == "" ]]
+then
+export QUERYSTRING=$CBRQUERY 
+export CBRROWS=1
+export CBRDAYS=7
+fi
+
+curl -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/process?rows=${CBRROWS}&cb.min_last_update=`date +%Y-%m-%d -d "${CBRDAYS} day ago"`T00%3A00%3A00Z"  --get --data-urlencode "q=${CBRQUERY}" > tmp
+
+QUERY_CHECK_DOMAIN_IP
+echo Info : Outputting search query summery
+grep  -E "${varfilter}"  tmp |  sort| uniq -c | sort -rn 
+ 
+
+grep -Eo "([A-Z|a-z|0-9]{100})" tmp| base64 -d | sed 's/\x00//g' | sed 's/^/Warning: Possible PowerShell Decoded : \! /g'
+
+echo Info : Digging deep into each search result
+
+
+	for i in `cat tmp | grep '\"id\": \"' | sed -r 's/.*\"id\": \"(.*)\",/\1/g' `
+	do
+	echo Debug:	Digging $i
+	export EVENTIDVAR=$i
+	EVENTID
+
+#	curl  -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v2/process/$i/0/report" -o "${i}.zip" &
+	done
+
+ 
+}
+
+
+
+
+
+###################### FUNCTION TO return domain info +-10 from queries with ipaddr or domain in them
+function CBR_DUMP_FEEDS_GETWATCHLIST(){
+echo dumping JSON watchlist to CSV
+curl -ikLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/watchlist" | tr -d '\n' |  awk '{gsub("\"last_hit_count","\n\"last_hit_count"); print}' |grep '^\"last_hit_count' | sed -r 's/, ([^"])/ \1/g' | sed -r 's/(\w),(\w)/\1 \2/g'  > WATCHLIST.csv
+
+CBR_DUMP_FEEDS_TI
+
+
+}
+
+
+###################### FUNCTION TO return domain info +-10 from queries with ipaddr or domain in them
+function QUERY_CHECK_DOMAIN_IP(){
+
+if [[ "$CBRQUERY" == *ipaddr* || "$CBRQUERY" == *domain*  ]]
+then
+echo Debug:	ipaddr or domain found returning domains/IPs +- 10 for $CBRQUERY
+sleep .1
+if [[ "$CBRQUERY" == *ipaddr* ]]
+then
+export CBRQUERY_STRIP=`echo $CBRQUERY | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b"`
+echo Debug:	ipaddr found $CBRQUERY_STRIP
+fi
+
+if [[ "$CBRQUERY" == *domain* ]]
+then
+export CBRQUERY_STRIP=`echo $CBRQUERY | grep -oE "\b([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}\b"`
+echo Debug:	domain found $CBRQUERY_STRIP
+fi
+
+echo Debug: CBRQUERY_STRIP is $CBRQUERY_STRIP
+
+	for i in `cat tmp | grep '\"id\": \"' | sed -r 's/.*\"id\": \"(.*)\",/\1/g' `
+	do
+	echo Debug:	Downloading $i 
+	curl  -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v2/process/$i/0/report" -o "${i}.zip" &
+	done
+	
+	while [[ `ps -a | grep curl |wc -l` != '0' ]]
+	do
+	echo Debug:	Waiting for downloads to complete
+	sleep .1
+	done
+	7z -bso0 -bsp0 -y -aou x "*.zip" -o"./ID_OUT/"
+	find . -iname netconn*.json -exec cat '{}' \; | awk '{gsub("{\"domain\": \"","\n"); print}' |  grep --no-group-separator -A 10 -B 10 "${CBRQUERY_STRIP}"|sed 's/\", \"proto\".*//g' |sort| uniq -c | sort -rn | head -n 30
+	
+	fi
+}
+
+
+
+###################### main #####################################
+
+#defaults
+CBR_DUMP_FEEDS_TI=0
+SENSORID=0
+QUERY=0
+QUERY_DEEP=0
+EVENTID=0
+CBR_DUMP_FEEDS_WATCHLIST=0
+
+
+if (($# == 0)); then
+ echo "Script requires an argument" ...
+ _usage
+ exit
+fi
+
+while getopts "qewhd" flag
+do
+     case "$flag" in
+         q)
+             QUERY=1
+             ;;
+         e)
+             EVENTID=1
+             ;;
+         w)
+             CBR_DUMP_FEEDS_WATCHLIST=1
+             ;;
+         d)
+             QUERY_DEEP=1
+             ;;
+         h)
+             _usage
+         exit
+             ;;
+     esac
+done
+
+
+[ "$QUERY" -eq 1 ] && { export CBRQUERY=$2 ;export CBRROWS=$4 ; export CBRDAYS=$3 ; QUERYRUN ; }
+[ "$EVENTID" -eq 1 ] && { export EVENTIDVAR=$2 ; EVENTID ; }
+[ "$CBR_DUMP_FEEDS_WATCHLIST" -eq 1 ] && { CBR_DUMP_FEEDS_GETWATCHLIST ; }
+[ "$QUERY_DEEP" -eq 1 ] && { export CBRQUERY=$2 ;export CBRROWS=$4 ; export CBRDAYS=$3 ; QUERYRUN_DEEP ; }
+
+
+echo "Completed for $*"
+
+ 
+#grep '\"process_md5\"' tmp | sed -r 's/(.*\"process_md5\": \")(.*)(\",)/\2/g' |   >> EVENTIDVAR_MD5S 
+exit
