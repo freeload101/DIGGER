@@ -112,14 +112,14 @@ get_cbr_file(){
 curl  -skJLO -L https://${CBRdomain}/api/v1/binary/$1 -H "X-Auth-Token: $CBRapikey" 
 mkdir ./$1_OUT/
 7z -bso0 -bsp0 -y -aoa x $1 -o./$1_OUT/
-curl -F 'apikey=$WildFireapikey'  -F "file=@./$1_OUT/filedata" 'https://wildfire.paloaltonetworks.com/publicapi/submit/file'  
+curl -F "apikey=$WildFireapikey"  -F "file=@./$1_OUT/filedata" 'https://wildfire.paloaltonetworks.com/publicapi/submit/file'  
 }
 
 ###################### FUNCTION TO CHECK MD5'S AND UPLOAD TO WILDFIRE IF UNKNOWN
 check_md5(){
 echo Debug:	Checking $1
 
-export MD5_CHECK=`curl -kLs -F 'apikey=$WildFireapikey' -F "hash=$1" 'https://wildfire.paloaltonetworks.com/publicapi/get/verdict'  | grep "<verdict>" | sed -r 's/(.*)(<verdict>)(.*)(<\/verdict>)/\3/g'`
+export MD5_CHECK=`curl -kLs -F "apikey=$WildFireapikey" -F "hash=$1" 'https://wildfire.paloaltonetworks.com/publicapi/get/verdict'  | grep "<verdict>" | sed -r 's/(.*)(<verdict>)(.*)(<\/verdict>)/\3/g'`
 
 if [[ "$MD5_CHECK" == "-102" ]]
 	then
@@ -137,6 +137,7 @@ export WILDFIRESCORE=$(bc <<< `curl -s -F "apikey=$WildFireapikey"  -F "hash=$1"
 	echo Info: $1,$MD5_CHECK,benign Seen by ,`curl -kLs "https://${CBRdomain}/api/v1/process/host/count?name=md5&md5=$1" -H "X-Auth-Token: $CBRapikey" | sed -r 's/(^.*hostCount\": )(.*)(, \"globalCount.*)/\2/g'`, Hosts with a score of,$WILDFIRESCORE
 fi
 }
+ 
 
 
 ###################### FUNCTION TO CRAWL DOWN THE TREE AND RETURN ALL THE MD5 info
