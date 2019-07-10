@@ -57,8 +57,7 @@ ipaddr:/domain: if no results found search Splunk etc for IP
 
 ipaddr:/domain: perform checks on domains censys.io
 
-ipaddr:/domain: domain rep using VT
-
+ 
 
 replace cmdline and path random strings and numbers with _RANDOM_ sed -r 's/[A-Z|a-z|0-9]{120}/_RANDOM_/g'|sed -r 's/[0-9]{4,999}/_RANDOM_/g' for deduping etc
 
