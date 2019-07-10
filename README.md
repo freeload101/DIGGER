@@ -43,6 +43,8 @@ edit export varfilter=  to add and aditonal fields you would like to return in t
 
 # Todo
 
+Virus Total Domain/IP Reputation via API
+
 Deepdig Summery : not begin
 
 Deepdig Summery : md5 seen <100 computers
