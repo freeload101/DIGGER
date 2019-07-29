@@ -254,7 +254,7 @@ QUERY_CHECK_DOMAIN_IP
 grep  -E "${varfilter}"  tmp |  sort| uniq -c | sort -rn 
  
 
-grep -Eo "([A-Z|a-z|0-9]{100})" tmp| base64 -d | sed 's/\x00//g' | sed 's/^/Warning: Possible PowerShell Decoded : \! /g'
+grep -Eo "([A-Z|a-z|0-9]{100})" tmp| base64 -d | sed 's/\x00//g' | sed 's/^/Warning: PowerShell Decoded : \! /g'
 
 }
 
