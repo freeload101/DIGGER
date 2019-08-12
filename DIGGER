@@ -1,8 +1,9 @@
 #!/usr/bin/bash
 
-# v 1.2alpha
+# v 1.3alpha
 
 # EXAMPLES:
+# -b 'digsig_result:Unsigned AND orig_mod_len:[1000000 TO *] -(company_name:"Microsoft  Corporation" observed_filename:*.dll) ' 20
 # -e 000092c7-0000-12dc-01d5-0c1d7842d547
 # -q 'md5:E30AA473082E6251F9B9A916FF45AB44'
 # 17 days 999 rows ( think max is 200 )
@@ -36,13 +37,16 @@ export varfilter='(\"cmdline\"|\"path\")'
 #export varfilter='(\"elapsed\"|\"alliance_link_attackframework\"|\"wid\"|\"segment_id\"|\"total_results\"|\"regmod_count\"|\"crossproc_count\"|\"cmdline\"|\"filemod_count\"|\"netconn_count\"|\"hostname\"|\"username\"|\"process_name\"|\"parent_name\"|\"path\")'
 
 #REMOVE and backup insted  DEBUGGING set -x 
-rm -Rf PENDING COMPLETE tmp  EVENTIDVAR_OUT.txt EVENTIDVAR_MD5S *.zip *_OUT   2> /dev/null
+rm -Rf PENDING COMPLETE tmp  EVENTIDVAR_OUT.txt EVENTIDVAR_MD5S *.zip *_OUT   MD5_results.txt  2> /dev/null
+
+# Kill any hung curl 
+taskkill /F /IM curl.exe 2> /dev/null
 
 # Put your super secret sensitive info here
 export CBRapikey='XXXXXXXXXXXXXXXXXXXXX'
-export WildFireapikey='XXXXXXXXXXXXXXXX'
-export CBRdomain='XXXXXXXXXXXXXXXXXXXXX.com:8443'
-
+export WildFireapikey='XXXXXXXXXXXXXXXXXXXXX'
+export CBRdomain='XXXXXXXXXXXXXXXXXXXXX:8443'
+export VTapikey='XXXXXXXXXXXXXXXXXXXXX'
 ############################################ DANGER DONT EDIT BELOW THIS LINE UNLESS YOU WANT YOUR RETINAS TO BURN LOOKING AT MY CODE #######
 
 function _usage(){
@@ -87,7 +91,7 @@ done
 
 while [[ `ps -a | grep curl |wc -l` != '0' ]]
 	do
-	echo Debug:	Waiting for downloads to complete
+	echo Debug:	Waiting for downloads to complete `ps -a | grep curl |wc -l`  current
 	sleep .1
 done
 		
@@ -107,13 +111,62 @@ curl -ikLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/watchlist
 
 
 
+
+###################### FUNCTION TO CHECK MD5'S AND UPLOAD TO WILDFIRE IF UNKNOWN
+check_md5_mutithreaded(){
+
+
+echo Debug:Checking Bulk MD5s
+for i in `cat EVENTIDVAR_MD5S`
+do
+curl -kLs -F "apikey=$WildFireapikey" -F "hash=$i" 'https://wildfire.paloaltonetworks.com/publicapi/get/verdict'  | grep "<verdict>" | sed -r 's/(.*)(<verdict>)(.*)(<\/verdict>)/\3/g'| sed "s/^/${i},/g" |tee -a MD5_results.txt &
+done
+
+while [[ `ps -a | grep curl |wc -l` != '0' ]]
+	do
+	echo Debug:	Waiting for wildfire query to complete
+	sleep 2
+	done
+
+
+
+echo Debug: Uploading Unknown Binaries
+for i in `grep '\-102' MD5_results.txt | sed 's/,.*//g'`
+	do
+		get_cbr_file $i 
+	done
+
+echo Debug: Banning known bad MD5s from Wildfire in CBR
+for i in `grep ,1 MD5_results.txt|sed 's/,1//g'`
+	do
+		export VAR_CBR_BANHASH=$i
+		CBR_BANHASH 
+	done
+}
+
+###################### FUNCTION TO BAN A SINGLE HASH
+CBR_BANHASH(){
+curl   -A DIGGER --fail  -skL https://${CBRdomain}/api/v1/banning/blacklist -H "X-Auth-Token: $CBRapikey" -H "Content-Type: application/json"  --data-raw \{\"md5hash\":\"${VAR_CBR_BANHASH}\",\"text\":\"DIGGER_AUTO_BAN\",\"last_ban_time\":0,\"ban_count\":0,\"last_ban_host\":0,\"enabled\":true\}
+}
+
+
+
 ###################### FUNCTION TO DOWNLOAD FILE BASED OFF OF MD5 AND  EXTRACT / UPLOAD TO WILDFIRE
 get_cbr_file(){
-curl  -skJLO -L https://${CBRdomain}/api/v1/binary/$1 -H "X-Auth-Token: $CBRapikey" 
-mkdir ./$1_OUT/
-7z -bso0 -bsp0 -y -aoa x $1 -o./$1_OUT/
-curl -F "apikey=$WildFireapikey"  -F "file=@./$1_OUT/filedata" 'https://wildfire.paloaltonetworks.com/publicapi/submit/file'  
+curl  --fail  -skJLO -L https://${CBRdomain}/api/v1/binary/$i -H "X-Auth-Token: $CBRapikey" 
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Downloading $i from CBR server faild likly missing binary from CBR ..."
+    else
+        mkdir ./$i_OUT/
+        7z -bso0 -bsp0 -y -aoa x $i -o./$i_OUT/
+        curl -F "apikey=$WildFireapikey"  -F "file=@./$i_OUT/filedata" 'https://wildfire.paloaltonetworks.com/publicapi/submit/file'  
+    fi
 }
+
+
+
+
 
 ###################### FUNCTION TO CHECK MD5'S AND UPLOAD TO WILDFIRE IF UNKNOWN
 check_md5(){
@@ -210,12 +263,7 @@ echo Info:	Wildfire Score is $WILDFIRESCORE
 }
 
 
-
-###################### FUNCTION TO CRAWL UP THE TREE AND RETURN ALL THE MD5 info
-check_md5_local(){
-# check counts for file localy
-curl -kLs "https://${CBRdomain}/api/v1/process/host/count?name=md5&md5=$1" -H "X-Auth-Token: $CBRapikey" | sed -r 's/(^.*hostCount\": )(.*)(, \"globalCount.*)/1/g'
-}
+ 
 
 ###################### FUNCTION TO digg into a event id and go up and down the event tree ,check cbr info for md5's check md5 wildfire , report wildfire score,return info on  ${varfilter} from CBR
 function EVENTID(){
@@ -223,12 +271,6 @@ echo Debug:	EVENTID  $EVENTIDVAR
 get_cbr_child
 get_cbr_top
  
-
-for i in `cat EVENTIDVAR_MD5S|sort -u`
-do
-check_md5 $i
-done
-
 
 awk '{gsub("\",","\",\n"); print}' EVENTIDVAR_OUT.txt |grep  -E "${varfilter}"  | sed -r  's/(.*\")(path|cmdline)/\"\2/g' | sort| uniq -c | sort -rn  | sed 's/^/Info:	/g'
 
@@ -293,6 +335,25 @@ echo Info : Digging deep into each search result
 }
 
 
+###################### FUNCTION TO CRAWL DOWN THE TREE AND RETURN ALL THE MD5 info
+function BINARY_QUERYRUN_DEEP(){
+#cb.q.server_added_timestamp=-43200m  rows=999 it is sorted by server_added_timestamp 
+echo Debug: Running Binary Deep Query on "$CBRQUERY" 
+
+ 
+
+
+curl -kLs  -H "X-Auth-Token: $CBRapikey" "https://${CBRdomain}/api/v1/binary?rows=${CBRROWS}&sort=server_added_timestamp%20desc"  --get --data-urlencode "q=${CBRQUERY}" > tmp
+
+
+
+cat tmp | grep '        "................................",' |  sed -e 's/        "//g' -e 's/[",|"]//g' > EVENTIDVAR_MD5S
+cat tmp | grep '        \"................................\"' |  sed -e 's/        "//g' -e 's/[",|"]//g' >> EVENTIDVAR_MD5S
+check_md5_mutithreaded
+
+
+ 
+}
 
 
 
@@ -336,7 +397,7 @@ echo Debug: CBRQUERY_STRIP is $CBRQUERY_STRIP
 	
 	while [[ `ps -a | grep curl |wc -l` != '0' ]]
 	do
-	echo Debug:	Waiting for downloads to complete
+	echo Debug:	Waiting for downloads to complete  `ps -a | grep curl |wc -l`  current
 	sleep .1
 	done
 	7z -bso0 -bsp0 -y -aou x "*.zip" -o"./ID_OUT/"
@@ -364,7 +425,7 @@ if (($# == 0)); then
  exit
 fi
 
-while getopts "qewhd" flag
+while getopts "qewhdb" flag
 do
      case "$flag" in
          q)
@@ -379,6 +440,9 @@ do
          d)
              QUERY_DEEP=1
              ;;
+         b)
+             BINARY_QUERY=1
+             ;;			 
          h)
              _usage
          exit
@@ -391,9 +455,10 @@ done
 [ "$EVENTID" -eq 1 ] && { export EVENTIDVAR=$2 ; EVENTID ; }
 [ "$CBR_DUMP_FEEDS_WATCHLIST" -eq 1 ] && { CBR_DUMP_FEEDS_GETWATCHLIST ; }
 [ "$QUERY_DEEP" -eq 1 ] && { export CBRQUERY=$2 ;export CBRROWS=$4 ; export CBRDAYS=$3 ; QUERYRUN_DEEP ; }
+[ "$BINARY_QUERY" -eq 1 ] && { export CBRQUERY=$2 ;export CBRROWS=$3   ; BINARY_QUERYRUN_DEEP ; }
 
 
-echo "Completed for $*"
+echo "Completed"
 
  
 #grep '\"process_md5\"' tmp | sed -r 's/(.*\"process_md5\": \")(.*)(\",)/\2/g' |   >> EVENTIDVAR_MD5S 
